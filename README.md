@@ -160,10 +160,15 @@ curl -s -X POST http://localhost:8000/api/chat \
 
 ## LLM Provider
 
-Switch between Gemini and OpenAI via `.env`:
+Switch between local Ollama and cloud providers via `.env`:
 
 ```env
-# Gemini (default)
+# Local (default) — no API key, no rate limits
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5:14b          # or llama3.2:3b, llama3.1:8b, llama3.3:70b …
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Gemini
 LLM_PROVIDER=gemini
 GOOGLE_API_KEY=...
 GEMINI_MODEL=gemini-2.0-flash
@@ -172,6 +177,69 @@ GEMINI_MODEL=gemini-2.0-flash
 LLM_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4o-mini
+```
+
+### Recommended local models (M4 Pro / Apple Silicon)
+
+| Model | Size | RAM | Quality |
+|-------|------|-----|---------|
+| `llama3.2:3b` | 2 GB | ~2 GB | Fast, basic routing |
+| `qwen2.5:7b` | 5 GB | ~5 GB | Good instruction following |
+| `qwen2.5:14b` ✓ | 9 GB | ~9 GB | **Recommended** — accurate routing + clean JSON |
+| `llama3.1:8b` | 5 GB | ~5 GB | Strong general purpose |
+| `llama3.3:70b` | 42 GB | ~42 GB | Near GPT-4 quality |
+
+Install Ollama and pull a model:
+```bash
+brew install ollama
+brew services start ollama
+ollama pull qwen2.5:14b
+```
+
+---
+
+## Prompt Budget
+
+Each `POST /api/chat` makes **2 LLM calls** (ContextPruner is deterministic — no LLM):
+
+| Call | System | User | Total |
+|------|--------|------|-------|
+| GlobalRouter | ~73 tokens | ~74 tokens | **~147 tokens** |
+| SubAgentExecutor | ~152 tokens | ~13 tokens | **~165 tokens** |
+| **Per request** | | | **~312 tokens** |
+
+- GlobalRouter sends the agent capability catalog as JSON (~74-token user message that grows linearly with number of installed agents)
+- SubAgentExecutor sends the full OpenAI function schema for the chosen agent + the user's last message only (not the full history)
+- ContextPruner formats output deterministically — zero LLM tokens
+
+---
+
+## Thread Resumption
+
+Every response includes a `thread_id`. Pass it back to continue the same conversation:
+
+```bash
+# Turn 1
+RESP=$(curl -s -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"user1","message":"Search for the best local LLMs in 2026"}')
+echo $RESP | python3 -m json.tool
+THREAD=$(echo $RESP | python3 -c "import sys,json; print(json.load(sys.stdin)['thread_id'])")
+
+# Turn 2 — resumes the same thread
+curl -s -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d "{\"user_id\":\"user1\",\"thread_id\":\"$THREAD\",\"message\":\"Which runs best on Apple Silicon?\"}" \
+  | python3 -m json.tool
+```
+
+**Hydration path on resumption:**
+
+```
+thread_id provided
+  → Redis hit (< 30 min since last turn)?  YES  → use cached state (< 1 ms)
+  → Redis miss, thread exists in Postgres?  YES  → rehydrate → re-cache to Redis
+  → Neither?                                     → 404 / empty state
 ```
 
 ---
