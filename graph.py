@@ -27,7 +27,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
-from agent_loader import get_agent_manifest, load_agent_executor
+from agent_loader import get_agent_manifest, list_installed_agents, load_agent_executor
 from cache import get_meta_registry
 
 logger = logging.getLogger(__name__)
@@ -65,44 +65,77 @@ class AgentState(TypedDict):
 
 async def global_router(state: AgentState) -> AgentState:
     """
-    Read the latest user message and the Redis meta-registry to decide which
-    tool package should handle this turn.
+    Read the latest user message and the installed APM agent descriptions to
+    decide which sub-agent should handle this turn.
 
-    The LLM is given the thread summaries and asked to pick the best-matching
-    APM namespace.  If no package fits, active_tools remains empty and the
-    SubAgentExecutor will respond in plain-text mode.
+    Agent capability descriptions come from each agent's ``agent.json``
+    (the ``function.description`` field), loaded directly from ``apm_modules/``.
+    The Redis meta-registry is consulted for thread-level context but is NOT
+    used to select the agent — that would mix thread history with capability
+    routing.
+
+    Returns ``active_tools=[]`` (plain-text LLM fallback) when no agent fits.
     """
-    registry = await get_meta_registry()
-
     user_message = next(
         (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
         "",
     )
 
-    if not registry:
-        logger.debug("GlobalRouter: meta-registry empty, no tool routing.")
+    # ------------------------------------------------------------------ #
+    # 1. Build an agent capability map from apm_modules/                  #
+    # ------------------------------------------------------------------ #
+    agent_names = await list_installed_agents()
+    if not agent_names:
+        logger.debug("GlobalRouter: no agents installed in apm_modules/, falling back to plain LLM.")
         return {**state, "active_tools": []}
 
-    registry_summary = json.dumps(
-        [
-            {"thread_id": t.get("thread_id"), "summary": t.get("semantic_summary")}
-            for t in registry
-        ],
-        ensure_ascii=False,
-    )
+    agent_catalog: dict[str, str] = {}
+    for name in agent_names:
+        try:
+            manifest = await get_agent_manifest(name)
+            description = (
+                manifest.get("function", {}).get("description")
+                or manifest.get("description")
+                or name
+            )
+            agent_catalog[name] = description
+        except Exception as exc:
+            logger.warning("GlobalRouter: could not load manifest for '%s': %s", name, exc)
 
+    if not agent_catalog:
+        return {**state, "active_tools": []}
+
+    catalog_json = json.dumps(agent_catalog, ensure_ascii=False, indent=2)
+
+    # ------------------------------------------------------------------ #
+    # 2. Thread context from Redis (used as extra signal, not for routing) #
+    # ------------------------------------------------------------------ #
+    thread_context = ""
+    registry = await get_meta_registry()
+    thread_entry = next(
+        (t for t in registry if t.get("thread_id") == state.get("current_thread_id")),
+        None,
+    )
+    if thread_entry and thread_entry.get("semantic_summary"):
+        thread_context = f"\nThread context: {thread_entry['semantic_summary']}"
+
+    # ------------------------------------------------------------------ #
+    # 3. Ask the LLM to pick the right agent                              #
+    # ------------------------------------------------------------------ #
     prompt = [
         SystemMessage(
             content=(
-                "You are a routing agent. Given a user message and a JSON list of "
-                "available tool packages, return ONLY the single best-matching "
-                "package namespace (e.g. '@comms/gmail-draft'). "
-                "If no package is relevant, return the string 'none'."
+                "You are a tool-routing agent. Given the user's message and a JSON "
+                "map of available agent names to their descriptions, return ONLY the "
+                "single agent name (key) that best handles the request. "
+                "If no agent is relevant, return the string 'none'. "
+                "Return only the agent name — no explanation, no quotes."
             )
         ),
         HumanMessage(
             content=(
-                f"Available packages:\n{registry_summary}\n\n"
+                f"Available agents:\n{catalog_json}"
+                f"{thread_context}\n\n"
                 f"User message:\n{user_message}"
             )
         ),
@@ -111,11 +144,11 @@ async def global_router(state: AgentState) -> AgentState:
     response = await _llm.ainvoke(prompt)
     chosen = response.content.strip().strip('"').strip("'")
 
-    if chosen.lower() == "none" or not chosen:
-        logger.debug("GlobalRouter: no matching package for this turn.")
+    if chosen.lower() == "none" or chosen not in agent_catalog:
+        logger.debug("GlobalRouter: no matching agent for this turn (LLM chose '%s').", chosen)
         return {**state, "active_tools": []}
 
-    logger.debug("GlobalRouter: selected package '%s'", chosen)
+    logger.info("GlobalRouter: routing to agent '%s'", chosen)
     return {**state, "active_tools": [chosen]}
 
 
