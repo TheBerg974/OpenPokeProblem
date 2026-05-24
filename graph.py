@@ -254,11 +254,24 @@ async def sub_agent_executor(state: AgentState) -> AgentState:
 # ---------------------------------------------------------------------------
 
 
+def _format_tool_output(raw_output: dict[str, Any]) -> str:
+    """
+    Convert raw tool output to a concise assistant message without an LLM call.
+    Prefers common 'message'/'result'/'content'/'summary' keys; falls back to
+    a truncated JSON dump.
+    """
+    for key in ("message", "result", "content", "summary", "text", "output"):
+        if key in raw_output and isinstance(raw_output[key], str):
+            return raw_output[key]
+    serialised = json.dumps(raw_output, default=str, ensure_ascii=False)
+    return serialised[:500] + ("…" if len(serialised) > 500 else "")
+
+
 async def context_pruner(state: AgentState) -> AgentState:
     """
-    Summarise the raw tool output into a single sentence, append it to the
-    message history, and delete the heavy ephemeral fields from state to keep
-    the context window lean.
+    Format the raw tool output into a readable assistant message and drop the
+    heavy ephemeral fields from state to keep the context window lean.
+    No LLM call — deterministic formatting keeps us well inside rate limits.
     """
     raw_output = state.get("_raw_tool_output")
 
@@ -270,22 +283,7 @@ async def context_pruner(state: AgentState) -> AgentState:
             "_active_tool_schema": None,
         }
 
-    summarise_prompt = [
-        SystemMessage(
-            content=(
-                "You are a context-pruning agent. "
-                "Summarise the following tool execution result in ONE concise sentence "
-                "suitable for a conversation history (e.g. 'Draft saved successfully'). "
-                "Output only the sentence, nothing else."
-            )
-        ),
-        HumanMessage(
-            content=json.dumps(raw_output, default=str, ensure_ascii=False)
-        ),
-    ]
-
-    summary_response = await get_llm().ainvoke(summarise_prompt)
-    summary_sentence: str = summary_response.content.strip()
+    summary_sentence: str = _format_tool_output(raw_output)
 
     updated_messages = state["messages"] + [
         {"role": "assistant", "content": summary_sentence}
