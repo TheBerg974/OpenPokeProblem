@@ -19,5 +19,8 @@ redis[hiredis]>=5.0.0
 # Data validation
 pydantic>=2.7.0
 
+# LLM providers
+langchain-google-genai>=2.0.0  # for Gemini
+
 # Environment / config
 python-dotenv>=1.0.0

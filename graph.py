@@ -23,7 +23,6 @@ import os
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
@@ -33,14 +32,36 @@ from cache import get_meta_registry
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# LLM client (swappable via env vars)
+# LLM client — provider selected by LLM_PROVIDER env var
+#   LLM_PROVIDER=gemini  -> uses GOOGLE_API_KEY  (default)
+#   LLM_PROVIDER=openai  -> uses OPENAI_API_KEY
 # ---------------------------------------------------------------------------
 
-_llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-    temperature=0,
-    api_key=os.getenv("OPENAI_API_KEY", ""),
-)
+def _build_llm() -> Any:
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            temperature=0,
+            api_key=os.getenv("OPENAI_API_KEY", ""),
+        )
+    # Default: Gemini
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    return ChatGoogleGenerativeAI(
+        model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        temperature=0,
+        google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+    )
+
+_llm_instance: Any = None
+
+def get_llm() -> Any:
+    """Lazily build the LLM client so .env is loaded before first use."""
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = _build_llm()
+    return _llm_instance
 
 # ---------------------------------------------------------------------------
 # State definition
@@ -141,7 +162,7 @@ async def global_router(state: AgentState) -> AgentState:
         ),
     ]
 
-    response = await _llm.ainvoke(prompt)
+    response = await get_llm().ainvoke(prompt)
     chosen = response.content.strip().strip('"').strip("'")
 
     if chosen.lower() == "none" or chosen not in agent_catalog:
@@ -168,7 +189,7 @@ async def sub_agent_executor(state: AgentState) -> AgentState:
             (HumanMessage if m["role"] == "user" else AIMessage)(content=m["content"])
             for m in state["messages"]
         ]
-        response = await _llm.ainvoke(lc_messages)
+        response = await get_llm().ainvoke(lc_messages)
         updated_messages = state["messages"] + [
             {"role": "assistant", "content": response.content}
         ]
@@ -211,7 +232,7 @@ async def sub_agent_executor(state: AgentState) -> AgentState:
         ],
     ]
 
-    args_response = await _llm.ainvoke(tool_call_prompt)
+    args_response = await get_llm().ainvoke(tool_call_prompt)
 
     try:
         tool_input: dict[str, Any] = json.loads(args_response.content)
@@ -263,7 +284,7 @@ async def context_pruner(state: AgentState) -> AgentState:
         ),
     ]
 
-    summary_response = await _llm.ainvoke(summarise_prompt)
+    summary_response = await get_llm().ainvoke(summarise_prompt)
     summary_sentence: str = summary_response.content.strip()
 
     updated_messages = state["messages"] + [

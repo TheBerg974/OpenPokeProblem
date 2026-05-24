@@ -38,6 +38,9 @@ from database import (
 )
 from graph import AgentState, agent_graph
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
