@@ -1,0 +1,10 @@
+name: open-poke
+version: 1.0.0
+description: APM project for open-poke
+author: TheBerg974
+dependencies:
+  apm:
+  - TheBerg974/open-poke-agents
+  mcp: []
+includes: auto
+scripts: {}

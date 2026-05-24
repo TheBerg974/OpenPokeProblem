@@ -1,0 +1,15 @@
+lockfile_version: '1'
+generated_at: '2026-05-24T17:44:26.820139+00:00'
+apm_version: 0.14.2
+dependencies:
+- repo_url: TheBerg974/open-poke-agents
+  host: github.com
+  resolved_commit: 1fafb27d11fd62323df9f59fbb241aee329fef31
+  package_type: apm_package
+  deployed_files:
+  - .github/agents/gmail-draft.agent.md
+  - .github/agents/web-search.agent.md
+  deployed_file_hashes:
+    .github/agents/gmail-draft.agent.md: sha256:faaab1dc40c365b9c035a00e90ecd947904294f0f3ff737c7a8bff3df0d987ca
+    .github/agents/web-search.agent.md: sha256:e3127aa99d400d5a0844ce476c78778de6ac812e54f4c474cf3b36e15a27db56
+  content_hash: sha256:f0cb28ac2231af62319c46c236754bf4763fde219427e3c33f9ad655aad99356

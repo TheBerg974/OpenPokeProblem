@@ -1,0 +1,11 @@
+
+# APM dependencies
+apm_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.env
+.env
+.venv/
+venv/

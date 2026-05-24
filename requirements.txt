@@ -1,0 +1,23 @@
+# Open Poke — Dynamic APM dependencies
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# LangGraph + LangChain
+langgraph>=0.1.0
+langchain-core>=0.2.0
+langchain-openai>=0.1.0
+
+# Database — async SQLAlchemy + asyncpg driver
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+
+# Cache — async Redis client
+redis[hiredis]>=5.0.0
+
+# Data validation
+pydantic>=2.7.0
+
+# Environment / config
+python-dotenv>=1.0.0
