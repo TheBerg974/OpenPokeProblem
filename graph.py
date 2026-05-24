@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -45,6 +46,13 @@ def _build_llm() -> Any:
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             temperature=0,
             api_key=os.getenv("OPENAI_API_KEY", ""),
+        )
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(
+            model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            temperature=0,
         )
     # Default: Gemini
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -216,28 +224,47 @@ async def sub_agent_executor(state: AgentState) -> AgentState:
         }
 
     # Ask the LLM to generate the tool call arguments.
+    params = schema.get("function", {}).get("parameters", {}).get("properties", {})
+    field_list = ", ".join(f'"{k}"' for k in params) if params else "(see schema)"
+    last_user_msg = next(
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"),
+        "",
+    )
     tool_call_prompt = [
         SystemMessage(
             content=(
-                "You are a tool-call generation agent. "
-                "Given the conversation and the tool schema below, "
-                "output ONLY a valid JSON object matching the tool's input parameters. "
-                "Do not add any explanation.\n\n"
+                f"Extract the fields {field_list} from the user message and return "
+                "ONLY a raw JSON object with those fields. "
+                "No markdown, no explanation, no code fences — just the JSON object.\n\n"
                 f"Tool schema:\n{json.dumps(schema, ensure_ascii=False)}"
             )
         ),
-        *[
-            (HumanMessage if m["role"] == "user" else AIMessage)(content=m["content"])
-            for m in state["messages"]
-        ],
+        HumanMessage(content=last_user_msg),
     ]
 
     args_response = await get_llm().ainvoke(tool_call_prompt)
+    raw_content = args_response.content.strip()
+    logger.info("SubAgentExecutor: raw arg response: %r", raw_content[:400])
+
+    # Strip markdown code fences that some models add.
+    if raw_content.startswith("```"):
+        raw_content = raw_content.split("```")[1]
+        if raw_content.startswith("json"):
+            raw_content = raw_content[4:]
+        raw_content = raw_content.strip()
+
+    # If the model included prose before/after the JSON, extract the first {...} block.
+    json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
+    if json_match:
+        raw_content = json_match.group(0)
 
     try:
-        tool_input: dict[str, Any] = json.loads(args_response.content)
+        tool_input: dict[str, Any] = json.loads(raw_content)
+        # Unwrap if model returned {"parameters": {...}} or {"function": {...}, "parameters": {...}}
+        if "parameters" in tool_input and isinstance(tool_input["parameters"], dict):
+            tool_input = tool_input["parameters"]
     except json.JSONDecodeError:
-        tool_input = {"raw_prompt": args_response.content}
+        tool_input = {"raw_prompt": raw_content}
 
     raw_output: dict[str, Any] = await executor(tool_input)
     logger.debug("SubAgentExecutor: raw output keys=%s", list(raw_output.keys()))

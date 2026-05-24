@@ -114,15 +114,15 @@ async def _sync_to_db(
     4. Refresh the in-memory meta-registry in Redis.
     """
     try:
-        await append_thread_history(thread_id, "user", user_message)
-        await append_thread_history(thread_id, "assistant", assistant_reply)
-
-        # Use the last assistant message as a lightweight semantic summary.
+        # Upsert thread_meta FIRST — thread_history has a FK referencing it.
         await upsert_thread_meta(
             thread_id=thread_id,
             title=f"Thread {thread_id[:8]}",
             summary=assistant_reply[:200],
         )
+
+        await append_thread_history(thread_id, "user", user_message)
+        await append_thread_history(thread_id, "assistant", assistant_reply)
 
         # Write the pruned state back to L1.
         await cache_thread_state(thread_id, dict(final_state))
